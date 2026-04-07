@@ -1,0 +1,55 @@
+name: E2E Test
+on:
+  repository_dispatch:
+    types: [pubm-release]
+  workflow_dispatch:
+    inputs:
+      pubm_version:
+        description: "pubm version to test"
+        default: "latest"
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun add pubm@${{ inputs.pubm_version || github.event.client_payload.pubm_version || 'latest' }} @pubm/core@${{ inputs.pubm_version || github.event.client_payload.pubm_version || 'latest' }} @pubm/plugin-brew @pubm/plugin-external-version-sync
+
+      - name: Set prerelease version
+        run: |
+          TIMESTAMP=$(date +%Y%m%d%H%M%S)
+          VERSION="0.0.1-e2e.${TIMESTAMP}"
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            pkg.version = process.env.VERSION;
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
+          "
+          echo "${VERSION}" > version.txt
+
+      - name: Publish
+        run: bunx pubm --mode ci --phase publish --any-branch
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PUBM_BREW_GITHUB_TOKEN: ${{ secrets.PUBM_BREW_GITHUB_TOKEN }}
+
+      - name: Verify npm deployment
+        run: |
+          sleep 10
+          npm view @pubm-test/with-plugins@${{ env.VERSION }}
+
+      - name: Verify version.txt was synced
+        run: |
+          CONTENT=$(cat version.txt)
+          if [ "$CONTENT" != "${{ env.VERSION }}" ]; then
+            echo "::error::version.txt not synced (expected ${{ env.VERSION }}, got $CONTENT)"
+            exit 1
+          fi
+          echo "version.txt synced correctly"
